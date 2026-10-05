@@ -56,7 +56,7 @@ jobs:
       - name: 1. Prisma (Generate Client & Push Ephemeral Schema)
         run: |
           pnpm run generate
-          pnpm exec prisma db push --skip-generate
+          pnpm exec prisma db push --accept-data-loss
 
       - name: 2. Typecheck
         run: pnpm run typecheck
