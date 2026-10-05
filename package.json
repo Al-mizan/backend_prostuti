@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx --watch src/server.ts",
-    "build": "tsc",
+    "build": "tsup",
+    "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "generate": "prisma generate"
@@ -12,6 +13,7 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
+    "@upstash/redis": "^1.39.0",
     "bcrypt": "^5.1.1",
     "busboy": "^1.6.0",
     "compression": "^1.8.0",
@@ -47,6 +49,7 @@
     "eslint": "^9.22.0",
     "prisma": "^7.10.0",
     "supertest": "^7.0.0",
+    "tsup": "^8.5.1",
     "tsx": "^4.19.3",
     "typescript": "^5.9.3",
     "vitest": "^3.0.8"

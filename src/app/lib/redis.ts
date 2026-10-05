@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Redis as UpstashRedis } from "@upstash/redis";
 import { createClient, RedisClientType } from "redis";
 import { envVars } from "../config/env";
 
@@ -7,39 +8,103 @@ interface MemoryCacheEntry {
   expiresAt: number;
 }
 
+export interface RedisServiceOptions {
+  upstashUrl?: string | null;
+  upstashToken?: string | null;
+  redisUrl?: string | null;
+  upstashClient?: UpstashRedis | null;
+  redisClient?: RedisClientType | null;
+  disableNetwork?: boolean;
+}
+
 export class RedisService {
+  private upstashClient: UpstashRedis | null = null;
   private client: RedisClientType | null = null;
   private isConnected: boolean = false;
   private memoryCache: Map<string, MemoryCacheEntry> = new Map();
   private rateLimitStore: Map<string, number[]> = new Map();
 
-  constructor() {
-    try {
-      this.client = createClient({
-        url: envVars.REDIS_URL,
-      });
+  constructor(options?: RedisServiceOptions) {
+    if (options?.disableNetwork) {
+      return;
+    }
 
-      this.client.on("error", (err) => {
-        // Log once or suppress to prevent unhandled rejections
-        if (this.isConnected) {
-          console.warn("Redis client error, falling back to memory:", err.message);
+    if (options?.upstashClient !== undefined) {
+      this.upstashClient = options.upstashClient;
+    } else {
+      const upstashUrl =
+        options?.upstashUrl !== undefined
+          ? options.upstashUrl
+          : envVars.UPSTASH_REDIS_REST_URL;
+      const upstashToken =
+        options?.upstashToken !== undefined
+          ? options.upstashToken
+          : envVars.UPSTASH_REDIS_REST_TOKEN;
+
+      if (upstashUrl && upstashToken) {
+        try {
+          this.upstashClient = new UpstashRedis({
+            url: upstashUrl,
+            token: upstashToken,
+          });
+        } catch (err: any) {
+          console.warn("Failed to initialize Upstash Redis REST client:", err?.message);
+          this.upstashClient = null;
         }
-        this.isConnected = false;
-      });
+      }
+    }
 
-      this.client.on("connect", () => {
-        this.isConnected = true;
-      });
+    if (options?.redisClient !== undefined) {
+      this.client = options.redisClient;
+    } else if (!this.upstashClient) {
+      const redisUrl =
+        options?.redisUrl !== undefined ? options.redisUrl : envVars.REDIS_URL;
 
-      this.client.on("end", () => {
-        this.isConnected = false;
-      });
-    } catch {
-      this.isConnected = false;
+      if (redisUrl) {
+        try {
+          this.client = createClient({
+            url: redisUrl,
+          });
+
+          this.client.on("error", (err) => {
+            if (this.isConnected) {
+              console.warn("Redis client error, falling back to memory:", err.message);
+            }
+            this.isConnected = false;
+          });
+
+          this.client.on("connect", () => {
+            this.isConnected = true;
+          });
+
+          this.client.on("end", () => {
+            this.isConnected = false;
+          });
+        } catch {
+          this.isConnected = false;
+        }
+      }
     }
   }
 
+  public get isUpstash(): boolean {
+    return this.upstashClient !== null;
+  }
+
+  public get isRedisClientConnected(): boolean {
+    return this.isConnected;
+  }
+
   public async connect(): Promise<void> {
+    if (this.upstashClient) {
+      try {
+        await this.upstashClient.ping();
+      } catch (err: any) {
+        console.warn("Upstash Redis ping failed, fallback will be used:", err?.message);
+      }
+      return;
+    }
+
     if (!this.client || this.isConnected) return;
     try {
       await this.client.connect();
@@ -50,7 +115,42 @@ export class RedisService {
     }
   }
 
+  public async disconnect(): Promise<void> {
+    if (this.client && this.isConnected) {
+      try {
+        await this.client.quit();
+      } catch {
+        // ignore
+      }
+      this.isConnected = false;
+    }
+  }
+
+  public clearMemory(): void {
+    this.memoryCache.clear();
+    this.rateLimitStore.clear();
+  }
+
   public async get<T>(key: string): Promise<T | null> {
+    if (this.upstashClient) {
+      try {
+        const raw = await this.upstashClient.get(key);
+        if (raw !== null && raw !== undefined) {
+          if (typeof raw === "string") {
+            try {
+              return JSON.parse(raw) as T;
+            } catch {
+              return raw as unknown as T;
+            }
+          }
+          return raw as T;
+        }
+        return null;
+      } catch (err: any) {
+        console.warn("Upstash Redis get error, attempting fallback:", err?.message);
+      }
+    }
+
     if (this.isConnected && this.client) {
       try {
         const raw = await this.client.get(key);
@@ -75,6 +175,17 @@ export class RedisService {
   }
 
   public async set(key: string, value: unknown, ttlSeconds = 300): Promise<void> {
+    if (this.upstashClient) {
+      try {
+        await this.upstashClient.set(key, JSON.stringify(value), {
+          ex: ttlSeconds,
+        });
+        return;
+      } catch (err: any) {
+        console.warn("Upstash Redis set error, attempting fallback:", err?.message);
+      }
+    }
+
     if (this.isConnected && this.client) {
       try {
         await this.client.set(key, JSON.stringify(value), {
@@ -93,6 +204,14 @@ export class RedisService {
   }
 
   public async del(key: string): Promise<void> {
+    if (this.upstashClient) {
+      try {
+        await this.upstashClient.del(key);
+      } catch (err: any) {
+        console.warn("Upstash Redis del error, attempting fallback:", err?.message);
+      }
+    }
+
     if (this.isConnected && this.client) {
       try {
         await this.client.del(key);
@@ -104,10 +223,21 @@ export class RedisService {
   }
 
   public async deleteByPattern(pattern: string): Promise<void> {
+    if (this.upstashClient) {
+      try {
+        const keys = await this.upstashClient.keys(pattern);
+        if (keys && keys.length > 0) {
+          await this.upstashClient.del(...keys);
+        }
+      } catch (err: any) {
+        console.warn("Upstash Redis deleteByPattern error, attempting fallback:", err?.message);
+      }
+    }
+
     if (this.isConnected && this.client) {
       try {
         const keys = await this.client.keys(pattern);
-        if (keys.length > 0) {
+        if (keys && keys.length > 0) {
           await this.client.del(keys);
         }
       } catch {
@@ -145,6 +275,31 @@ export class RedisService {
     windowMs: number
   ): Promise<{ allowed: boolean; remaining: number; resetMs: number }> {
     const now = Date.now();
+
+    if (this.upstashClient) {
+      try {
+        const clearBefore = now - windowMs;
+        const pipeline = this.upstashClient.pipeline();
+        pipeline.zremrangebyscore(key, 0, clearBefore);
+        pipeline.zadd(key, { score: now, member: `${now}:${Math.random()}` });
+        pipeline.zcard(key);
+        pipeline.pexpire(key, windowMs);
+
+        const results = await pipeline.exec();
+        const count = (results[2] as unknown as number) || 1;
+
+        const allowed = count <= limit;
+        const remaining = Math.max(0, limit - count);
+
+        return {
+          allowed,
+          remaining,
+          resetMs: windowMs,
+        };
+      } catch (err: any) {
+        console.warn("Upstash Redis evaluateRateLimit error, attempting fallback:", err?.message);
+      }
+    }
 
     if (this.isConnected && this.client) {
       try {
