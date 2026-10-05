@@ -15,6 +15,7 @@ export interface IPracticeSessionQuestionDto {
   optionD: string;
   topic?: string | null;
   difficulty?: Difficulty | null;
+  examSession?: string | null;
 }
 
 export interface IPracticeSessionDto {

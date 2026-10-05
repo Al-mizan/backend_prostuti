@@ -185,6 +185,7 @@ describe("Practice Module Integration Tests", () => {
         expect(q).toHaveProperty("optionB");
         expect(q).toHaveProperty("optionC");
         expect(q).toHaveProperty("optionD");
+        expect(q).toHaveProperty("examSession");
         expect(q).not.toHaveProperty("correctOption");
         expect(q).not.toHaveProperty("explanation");
       }

@@ -29,22 +29,77 @@ const startSession = async (
     payload.durationMinutes ?? DEFAULT_EXAM_DURATION_MINUTES;
   const examSession = payload.examSession.trim();
 
-  const whereClause: {
-    type: QuestionType;
-    isDeleted: boolean;
-    examSession?: string;
-  } = {
-    type: QuestionType.BANK,
-    isDeleted: false,
-  };
+  let candidateQuestions: any[] = [];
+  let resolvedExamSession = examSession;
 
-  if (examSession && examSession.toUpperCase() !== "ALL") {
-    whereClause.examSession = examSession;
+  if (examSession.toUpperCase() === "ALL") {
+    candidateQuestions = await prisma.question.findMany({
+      where: {
+        type: QuestionType.BANK,
+        isDeleted: false,
+      },
+    });
+  } else {
+    // 1. Exact match
+    candidateQuestions = await prisma.question.findMany({
+      where: {
+        type: QuestionType.BANK,
+        isDeleted: false,
+        examSession,
+      },
+    });
+
+    // 2. Case-insensitive exact match
+    if (candidateQuestions.length === 0) {
+      candidateQuestions = await prisma.question.findMany({
+        where: {
+          type: QuestionType.BANK,
+          isDeleted: false,
+          examSession: {
+            equals: examSession,
+            mode: "insensitive",
+          },
+        },
+      });
+    }
+
+    // 3. Case-insensitive contains match (e.g. '47th BCS Preli' matches '47th BCS Preliminary')
+    if (candidateQuestions.length === 0) {
+      candidateQuestions = await prisma.question.findMany({
+        where: {
+          type: QuestionType.BANK,
+          isDeleted: false,
+          examSession: {
+            contains: examSession,
+            mode: "insensitive",
+          },
+        },
+      });
+    }
+
+    // 4. Prefix / BCS number match (e.g. '47th BCS' or '47th')
+    if (candidateQuestions.length === 0) {
+      const match =
+        examSession.match(/^(\d+(?:th|st|nd|rd)?\s*bcs)/i) ||
+        examSession.match(/^(\d+(?:th|st|nd|rd)?)/i);
+      if (match) {
+        candidateQuestions = await prisma.question.findMany({
+          where: {
+            type: QuestionType.BANK,
+            isDeleted: false,
+            examSession: {
+              contains: match[1].trim(),
+              mode: "insensitive",
+            },
+          },
+        });
+      }
+    }
+
+    if (candidateQuestions.length > 0 && candidateQuestions[0].examSession) {
+      resolvedExamSession = candidateQuestions[0].examSession;
+    }
   }
-
-  const candidateQuestions = await prisma.question.findMany({
-    where: whereClause,
-  });
 
   if (candidateQuestions.length === 0) {
     throw new AppError(
@@ -63,7 +118,7 @@ const startSession = async (
     const newAttempt = await tx.examAttempt.create({
       data: {
         userId,
-        examSession,
+        examSession: resolvedExamSession,
         startedAt: now,
       },
     });

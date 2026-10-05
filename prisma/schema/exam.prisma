@@ -24,3 +24,20 @@ model ExamAttemptQuestion {
   @@id([attemptId, questionId])
   @@map("exam_attempt_questions")
 }
+
+model ModelTest {
+  id              String    @id @default(uuid()) @db.Uuid
+  title           String
+  description     String?
+  examSession     String    @map("exam_session")
+  durationMinutes Int       @default(120) @map("duration_minutes")
+  totalMarks      Float     @default(200.0) @map("total_marks")
+  totalQuestions  Int       @default(200) @map("total_questions")
+  startTime       DateTime  @map("start_time")
+  endTime         DateTime  @map("end_time")
+  isPublished     Boolean   @default(true) @map("is_published")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("model_tests")
+}

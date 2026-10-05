@@ -1,5 +1,5 @@
 import httpStatus from "http-status";
-import { SessionType } from "../../../generated/prisma/enums";
+import { QuestionType, SessionType } from "../../../generated/prisma/enums";
 import AppError from "../../errorHelpers/AppError";
 import { prisma } from "../../lib/prisma";
 import {
@@ -20,13 +20,25 @@ const startSession = async (
   const count = payload.count ?? 10;
   const subject = payload.subject;
 
-  const candidateQuestions = await prisma.question.findMany({
+  let candidateQuestions = await prisma.question.findMany({
     where: {
+      type: QuestionType.BANK,
       subject,
       isDeleted: false,
     },
     take: count * 4,
   });
+
+  // Fallback to any available questions for subject (e.g. seeded PRACTICE questions)
+  if (candidateQuestions.length === 0) {
+    candidateQuestions = await prisma.question.findMany({
+      where: {
+        subject,
+        isDeleted: false,
+      },
+      take: count * 4,
+    });
+  }
 
   if (candidateQuestions.length === 0) {
     throw new AppError(
@@ -74,6 +86,7 @@ const startSession = async (
       optionD: q.optionD,
       topic: q.topic,
       difficulty: q.difficulty,
+      examSession: q.examSession,
     })),
     startedAt: now.toISOString(),
   };

@@ -176,6 +176,21 @@ describe("Exam Module Integration Tests", () => {
         expect(q).not.toHaveProperty("explanation");
       }
     });
+
+    it("successfully creates an exam session with fallback matching (e.g. '45th BCS Preli')", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          examSession: "45th BCS Preli",
+          questionCount: 5,
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty("id");
+      expect(res.body.data.questions.length).toBe(5);
+    });
   });
 
   describe("POST /api/v1/exam/sessions/:id/submit & BCS Negative Marking", () => {
