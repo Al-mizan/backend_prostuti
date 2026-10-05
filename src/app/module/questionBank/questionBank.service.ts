@@ -47,7 +47,7 @@ const listSessions = async (): Promise<IBcsSessionSummaryDto[]> => {
     const durationMinutes = isShort ? 60 : 120;
     const totalMarks = isShort ? 100.0 : 200.0;
 
-    let count = 0;
+    let count = edition > 47 ? 0 : defaultCount;
     for (const [key, value] of dbCounts.entries()) {
       const match = key.match(/\b(\d+)(?:st|nd|rd|th)?\b/i);
       if (match && parseInt(match[1], 10) === edition) {
