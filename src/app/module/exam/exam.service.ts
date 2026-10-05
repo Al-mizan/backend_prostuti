@@ -77,20 +77,22 @@ const startSession = async (
       });
     }
 
-    // 4. Prefix / BCS number match (e.g. '47th BCS' or '47th')
+    // 4. Prefix / BCS number match (e.g. '47th BCS', '47th', '41st', etc.)
     if (candidateQuestions.length === 0) {
-      const match =
-        examSession.match(/^(\d+(?:th|st|nd|rd)?\s*bcs)/i) ||
-        examSession.match(/^(\d+(?:th|st|nd|rd)?)/i);
-      if (match) {
+      const numberMatch = examSession.match(/\b(\d+)(?:st|nd|rd|th)?\b/i);
+      if (numberMatch) {
+        const editionNum = numberMatch[1];
         candidateQuestions = await prisma.question.findMany({
           where: {
             type: QuestionType.BANK,
             isDeleted: false,
-            examSession: {
-              contains: match[1].trim(),
-              mode: "insensitive",
-            },
+            OR: [
+              { examSession: { contains: `${editionNum}th`, mode: "insensitive" } },
+              { examSession: { contains: `${editionNum}st`, mode: "insensitive" } },
+              { examSession: { contains: `${editionNum}nd`, mode: "insensitive" } },
+              { examSession: { contains: `${editionNum}rd`, mode: "insensitive" } },
+              { examSession: { contains: editionNum, mode: "insensitive" } },
+            ],
           },
         });
       }

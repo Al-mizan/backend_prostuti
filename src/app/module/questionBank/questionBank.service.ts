@@ -33,8 +33,30 @@ const listSessions = async (): Promise<IBcsSessionSummaryDto[]> => {
   const shortEditions = new Set([49, 42, 33]);
   const defaultArchive: IBcsSessionSummaryDto[] = [];
 
+  const getOrdinal = (n: number): string => {
+    const s = ["th", "st", "nd", "rd"];
+    const v = n % 100;
+    return s[(v - 20) % 10] || s[v] || s[0];
+  };
+
+  const matchedDbKeys = new Set<string>();
+
   for (let edition = 50; edition >= 10; edition--) {
     const isShort = shortEditions.has(edition) || edition <= 34;
+    const defaultCount = edition === 37 ? 198 : isShort ? 100 : 200;
+    const durationMinutes = isShort ? 60 : 120;
+    const totalMarks = isShort ? 100.0 : 200.0;
+
+    let count = defaultCount;
+    for (const [key, value] of dbCounts.entries()) {
+      const match = key.match(/\b(\d+)(?:st|nd|rd|th)?\b/i);
+      if (match && parseInt(match[1], 10) === edition) {
+        count = value;
+        matchedDbKeys.add(key);
+        break;
+      }
+    }
+
     let sessionName: string;
     if (edition === 49) {
       sessionName = "49th BCS(General) Preli";
@@ -42,18 +64,6 @@ const listSessions = async (): Promise<IBcsSessionSummaryDto[]> => {
       sessionName = "48th BCS(Special) Preli";
     } else {
       sessionName = `${edition}th BCS Preli`;
-    }
-
-    const defaultCount = edition === 37 ? 198 : isShort ? 100 : 200;
-    const durationMinutes = isShort ? 60 : 120;
-    const totalMarks = isShort ? 100.0 : 200.0;
-
-    let count = defaultCount;
-    for (const [key, value] of dbCounts.entries()) {
-      if (key.includes(`${edition}th`) || key === sessionName) {
-        count = value;
-        break;
-      }
     }
 
     defaultArchive.push({
@@ -67,10 +77,7 @@ const listSessions = async (): Promise<IBcsSessionSummaryDto[]> => {
 
   const customDbSessions: IBcsSessionSummaryDto[] = [];
   for (const [name, count] of dbCounts.entries()) {
-    const matchesDefault = defaultArchive.some(
-      (d) => d.sessionName === name || /\b\d+th\b/.test(name)
-    );
-    if (!matchesDefault) {
+    if (!matchedDbKeys.has(name)) {
       customDbSessions.push({
         sessionName: name,
         totalQuestions: count,
@@ -108,6 +115,41 @@ const listQuestions = async (
     }
   }
 
+  let resolvedExamSession = examSession;
+  if (examSession && examSession.toUpperCase() !== "ALL") {
+    const exactCount = await prisma.question.count({
+      where: {
+        type: QuestionType.BANK,
+        isDeleted: false,
+        examSession,
+      },
+    });
+
+    if (exactCount === 0) {
+      const match = examSession.match(/\b(\d+)(?:st|nd|rd|th)?\b/i);
+      if (match) {
+        const editionNum = match[1];
+        const candidate = await prisma.question.findFirst({
+          where: {
+            type: QuestionType.BANK,
+            isDeleted: false,
+            OR: [
+              { examSession: { contains: `${editionNum}th`, mode: "insensitive" } },
+              { examSession: { contains: `${editionNum}st`, mode: "insensitive" } },
+              { examSession: { contains: `${editionNum}nd`, mode: "insensitive" } },
+              { examSession: { contains: `${editionNum}rd`, mode: "insensitive" } },
+              { examSession: { contains: examSession, mode: "insensitive" } },
+            ],
+          },
+          select: { examSession: true },
+        });
+        if (candidate?.examSession) {
+          resolvedExamSession = candidate.examSession;
+        }
+      }
+    }
+  }
+
   const page = typeof query.page === "number" && query.page >= 0 ? query.page : 0;
   const pageSize =
     typeof query.pageSize === "number" && query.pageSize > 0
@@ -117,7 +159,7 @@ const listQuestions = async (
   const where: Prisma.QuestionWhereInput = {
     type: QuestionType.BANK,
     isDeleted: false,
-    ...(examSession ? { examSession } : {}),
+    ...(resolvedExamSession ? { examSession: resolvedExamSession } : {}),
     ...(query.subject ? { subject: query.subject } : {}),
   };
 
