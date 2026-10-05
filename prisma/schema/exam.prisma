@@ -1,0 +1,26 @@
+model ExamAttempt {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  examSession      String    @map("exam_session")
+  startedAt        DateTime  @map("started_at")
+  finishedAt       DateTime? @map("finished_at")
+  timeTakenSeconds Int?      @map("time_taken_seconds")
+  score            Int?
+
+  user                 User                  @relation(fields: [userId], references: [id])
+  examAttemptQuestions ExamAttemptQuestion[]
+
+  @@map("exam_attempts")
+}
+
+model ExamAttemptQuestion {
+  attemptId  String @map("attempt_id") @db.Uuid
+  questionId String @map("question_id") @db.Uuid
+  orderIndex Int    @map("order_index")
+
+  attempt  ExamAttempt @relation(fields: [attemptId], references: [id])
+  question Question    @relation(fields: [questionId], references: [id])
+
+  @@id([attemptId, questionId])
+  @@map("exam_attempt_questions")
+}

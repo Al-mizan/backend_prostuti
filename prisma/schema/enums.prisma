@@ -1,0 +1,39 @@
+enum Role {
+  STUDENT
+  ADMIN
+}
+
+enum Subject {
+  BENGALI
+  ENGLISH
+  BD_INTERNATIONAL_AFFAIRS
+  GEOGRAPHY
+  SCIENCE
+  IT
+  MATH
+  MENTAL_ABILITY
+  ETHICS
+}
+
+enum QuestionType {
+  BANK
+  PRACTICE
+}
+
+enum SessionType {
+  PRACTICE
+  EXAM
+}
+
+enum Option {
+  A
+  B
+  C
+  D
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}

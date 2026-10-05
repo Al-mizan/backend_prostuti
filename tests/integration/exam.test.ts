@@ -1,0 +1,350 @@
+import request from "supertest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import app from "../../src/app";
+import { prisma } from "../../src/app/lib/prisma";
+import {
+  Difficulty,
+  Option,
+  QuestionType,
+  Subject,
+} from "../../src/generated/prisma/enums";
+
+describe("Exam Module Integration Tests", () => {
+  const testEmail = `vitest_exam_${Date.now()}@example.com`;
+  const otherEmail = `vitest_other_exam_${Date.now()}@example.com`;
+  const testPassword = "Password123!";
+  const testSessionName = "45th BCS";
+  let authToken = "";
+  let otherAuthToken = "";
+  let userId = "";
+  let otherUserId = "";
+  const createdQuestionIds: string[] = [];
+
+  beforeAll(async () => {
+    // 1. Create primary student
+    const res = await request(app).post("/api/v1/auth/register").send({
+      name: "Exam Student 1",
+      email: testEmail,
+      password: testPassword,
+    });
+
+    expect(res.status).toBe(201);
+    authToken = res.body.data.token;
+    userId = res.body.data.userId;
+
+    // 2. Create secondary student
+    const otherRes = await request(app).post("/api/v1/auth/register").send({
+      name: "Exam Student 2",
+      email: otherEmail,
+      password: testPassword,
+    });
+
+    expect(otherRes.status).toBe(201);
+    otherAuthToken = otherRes.body.data.token;
+    otherUserId = otherRes.body.data.userId;
+
+    // 3. Seed 8 BANK questions for "45th BCS"
+    for (let i = 1; i <= 8; i++) {
+      const q = await prisma.question.create({
+        data: {
+          type: QuestionType.BANK,
+          examSession: testSessionName,
+          subject: Subject.BD_INTERNATIONAL_AFFAIRS,
+          questionText: `BCS 45 Question #${i}: What is the capital of Bangladesh?`,
+          optionA: "Dhaka",
+          optionB: "Chittagong",
+          optionC: "Rajshahi",
+          optionD: "Khulna",
+          correctOption: Option.A,
+          explanation: "Dhaka is the capital of Bangladesh.",
+          difficulty: Difficulty.EASY,
+          createdBy: userId,
+        },
+      });
+      createdQuestionIds.push(q.id);
+    }
+  });
+
+  afterAll(async () => {
+    const userIds = [userId, otherUserId].filter(Boolean);
+    if (userIds.length > 0) {
+      const attempts = await prisma.examAttempt.findMany({
+        where: { userId: { in: userIds } },
+        select: { id: true },
+      });
+      const attemptIds = attempts.map((a) => a.id);
+      if (attemptIds.length > 0) {
+        await prisma.answer.deleteMany({
+          where: { sessionId: { in: attemptIds } },
+        });
+        await prisma.examAttemptQuestion.deleteMany({
+          where: { attemptId: { in: attemptIds } },
+        });
+        await prisma.examAttempt.deleteMany({
+          where: { id: { in: attemptIds } },
+        });
+      }
+    }
+
+    if (createdQuestionIds.length > 0) {
+      await prisma.answer.deleteMany({
+        where: { questionId: { in: createdQuestionIds } },
+      });
+      await prisma.examAttemptQuestion.deleteMany({
+        where: { questionId: { in: createdQuestionIds } },
+      });
+      await prisma.practiceSessionQuestion.deleteMany({
+        where: { questionId: { in: createdQuestionIds } },
+      });
+      await prisma.question.deleteMany({
+        where: { id: { in: createdQuestionIds } },
+      });
+    }
+
+    if (userIds.length > 0) {
+      await prisma.user.deleteMany({
+        where: { id: { in: userIds } },
+      });
+    }
+  });
+
+  describe("POST /api/v1/exam/sessions", () => {
+    it("returns 401 Unauthorized without auth token", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .send({ examSession: testSessionName, questionCount: 5 });
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("rejects question count less than 5 with 400 validation error", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ examSession: testSessionName, questionCount: 4 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("rejects question count greater than 200 with 400 validation error", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ examSession: testSessionName, questionCount: 201 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("returns 404 when session has no questions", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ examSession: "Nonexistent BCS 999", questionCount: 5 });
+
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+      expect(res.body.message).toContain("No questions found for session");
+    });
+
+    it("creates an exam session and returns questions without answers or explanations", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          examSession: testSessionName,
+          questionCount: 6,
+          durationMinutes: 20,
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.message).toBe("Exam session started successfully");
+      expect(res.body.data).toHaveProperty("id");
+      expect(res.body.data.examSession).toBe(testSessionName);
+      expect(res.body.data.durationMinutes).toBe(20);
+      expect(res.body.data.questions.length).toBe(6);
+
+      for (const q of res.body.data.questions) {
+        expect(q).toHaveProperty("id");
+        expect(q).toHaveProperty("subject");
+        expect(q).toHaveProperty("questionText");
+        expect(q).toHaveProperty("optionA");
+        expect(q).not.toHaveProperty("correctOption");
+        expect(q).not.toHaveProperty("explanation");
+      }
+    });
+  });
+
+  describe("POST /api/v1/exam/sessions/:id/submit & BCS Negative Marking", () => {
+    let activeSessionId = "";
+    let examQuestions: any[] = [];
+
+    beforeAll(async () => {
+      const startRes = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          examSession: testSessionName,
+          questionCount: 6,
+          durationMinutes: 30,
+        });
+
+      expect(startRes.status).toBe(201);
+      activeSessionId = startRes.body.data.id;
+      examQuestions = startRes.body.data.questions;
+    });
+
+    it("rejects submit from another user with 404 Not Found", async () => {
+      const res = await request(app)
+        .post(`/api/v1/exam/sessions/${activeSessionId}/submit`)
+        .set("Authorization", `Bearer ${otherAuthToken}`)
+        .send({
+          timeTakenSeconds: 120,
+          answers: [],
+        });
+
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+      expect(res.body.message).toBe("Exam session not found");
+    });
+
+    it("correctly calculates BCS negative marking (+1.0 per correct, -0.5 per wrong, 0 per skipped)", async () => {
+      // 6 questions:
+      // q0: correct (A) -> +1.0
+      // q1: correct (A) -> +1.0
+      // q2: wrong (B) -> -0.5
+      // q3: wrong (C) -> -0.5
+      // q4: skipped (null) -> 0
+      // q5: not in answers array (skipped) -> 0
+      // Expected: correctCount=2, incorrectCount=2, skippedCount=2, netScore = 2 - (2*0.5) = 1.0
+      const payloadAnswers = [
+        { questionId: examQuestions[0].id, selectedOption: Option.A },
+        { questionId: examQuestions[1].id, selectedOption: Option.A },
+        { questionId: examQuestions[2].id, selectedOption: Option.B },
+        { questionId: examQuestions[3].id, selectedOption: Option.C },
+        { questionId: examQuestions[4].id, selectedOption: null },
+      ];
+
+      const res = await request(app)
+        .post(`/api/v1/exam/sessions/${activeSessionId}/submit`)
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          timeTakenSeconds: 300,
+          answers: payloadAnswers,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.message).toBe("Exam submitted successfully");
+      expect(res.body.data.sessionId).toBe(activeSessionId);
+      expect(res.body.data.totalQuestions).toBe(6);
+      expect(res.body.data.correctCount).toBe(2);
+      expect(res.body.data.incorrectCount).toBe(2);
+      expect(res.body.data.skippedCount).toBe(2);
+      expect(res.body.data.score).toBe(1.0);
+      expect(res.body.data.timeTakenSeconds).toBe(300);
+      expect(res.body.data.questions.length).toBe(6);
+
+      // Verify answers in DB
+      const answersInDb = await prisma.answer.findMany({
+        where: { sessionId: activeSessionId },
+      });
+      // 4 answers inserted (2 correct + 2 incorrect, skipped answers are not stored in answers table)
+      expect(answersInDb.length).toBe(4);
+
+      // Verify attempt score in DB is rounded integer
+      const dbAttempt = await prisma.examAttempt.findUnique({
+        where: { id: activeSessionId },
+      });
+      expect(dbAttempt?.finishedAt).not.toBeNull();
+      expect(dbAttempt?.score).toBe(1);
+    });
+
+    it("refuses resubmitting an already-finished exam with 409 Conflict", async () => {
+      const res = await request(app)
+        .post(`/api/v1/exam/sessions/${activeSessionId}/submit`)
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          timeTakenSeconds: 320,
+          answers: [],
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body.success).toBe(false);
+      expect(res.body.message).toBe("Exam session has already been submitted");
+    });
+
+    it("verifies negative marking floor at 0.0 when penalties exceed correct answers", async () => {
+      // Start another session for other user
+      const startRes = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${otherAuthToken}`)
+        .send({
+          examSession: testSessionName,
+          questionCount: 5,
+          durationMinutes: 15,
+        });
+
+      expect(startRes.status).toBe(201);
+      const otherSessionId = startRes.body.data.id;
+      const otherQuestions = startRes.body.data.questions;
+
+      // Submit all 5 questions as wrong answers -> 0 - 5*0.5 = -2.5 -> floor at 0.0
+      const allWrongAnswers = otherQuestions.map((q: any) => ({
+        questionId: q.id,
+        selectedOption: Option.D,
+      }));
+
+      const submitRes = await request(app)
+        .post(`/api/v1/exam/sessions/${otherSessionId}/submit`)
+        .set("Authorization", `Bearer ${otherAuthToken}`)
+        .send({
+          timeTakenSeconds: 150,
+          answers: allWrongAnswers,
+        });
+
+      expect(submitRes.status).toBe(200);
+      expect(submitRes.body.data.correctCount).toBe(0);
+      expect(submitRes.body.data.incorrectCount).toBe(5);
+      expect(submitRes.body.data.score).toBe(0.0);
+    });
+  });
+
+  describe("GET /api/v1/leaderboard/:examSession & GET /api/v1/exam/leaderboard/:examSession", () => {
+    it("returns leaderboard ranked by score DESC then timeTakenSeconds ASC", async () => {
+      // Student 1 scored 1.0 in 300s
+      // Student 2 scored 0.0 in 150s
+      const res = await request(app)
+        .get(`/api/v1/leaderboard/${encodeURIComponent(testSessionName)}`)
+        .set("Authorization", `Bearer ${authToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.data.length).toBeGreaterThanOrEqual(2);
+
+      const student1Entry = res.body.data.find(
+        (e: any) => e.userId === userId
+      );
+      const student2Entry = res.body.data.find(
+        (e: any) => e.userId === otherUserId
+      );
+
+      expect(student1Entry).toBeDefined();
+      expect(student2Entry).toBeDefined();
+      expect(student1Entry.rank).toBeLessThan(student2Entry.rank);
+      expect(student1Entry.score).toBeGreaterThanOrEqual(student2Entry.score);
+
+      // Verify alias route /api/v1/exam/leaderboard/:examSession
+      const aliasRes = await request(app)
+        .get(`/api/v1/exam/leaderboard/${encodeURIComponent(testSessionName)}`)
+        .set("Authorization", `Bearer ${authToken}`);
+
+      expect(aliasRes.status).toBe(200);
+      expect(aliasRes.body.data).toEqual(res.body.data);
+    });
+  });
+});

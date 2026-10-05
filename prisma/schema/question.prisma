@@ -1,0 +1,26 @@
+model Question {
+  id            String       @id @default(uuid()) @db.Uuid
+  type          QuestionType
+  subject       Subject
+  examSession   String?      @map("exam_session")
+  topic         String?
+  questionText  String       @map("question_text")
+  optionA       String       @map("option_a")
+  optionB       String       @map("option_b")
+  optionC       String       @map("option_c")
+  optionD       String       @map("option_d")
+  correctOption Option       @map("correct_option")
+  explanation   String?
+  difficulty    Difficulty?
+  createdBy     String       @map("created_by") @db.Uuid
+  isDeleted     Boolean      @default(false) @map("is_deleted")
+  deletedAt     DateTime?    @map("deleted_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  creator                  User                      @relation(fields: [createdBy], references: [id])
+  practiceSessionQuestions PracticeSessionQuestion[]
+  examAttemptQuestions     ExamAttemptQuestion[]
+  answers                  Answer[]
+
+  @@map("questions")
+}
