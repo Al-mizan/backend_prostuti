@@ -202,5 +202,40 @@ describe("Question Bank Module Integration Tests", () => {
       expect(res.body.success).toBe(false);
       expect(res.body.message).toBe("Validation Error");
     });
+
+    it("returns subject questions across all BCS exams when examSession is omitted (regression test)", async () => {
+      const res = await request(app)
+        .get("/api/v1/question-bank")
+        .query({ subject: "BENGALI" })
+        .set("Authorization", `Bearer ${authToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.total).toBeGreaterThanOrEqual(1000);
+      expect(res.body.data.items.length).toBe(20);
+      expect(res.body.data.items.every((i: any) => i.subject === "BENGALI")).toBe(true);
+    });
+
+    it("returns subject questions across all BCS exams when examSession is ALL (regression test)", async () => {
+      const res = await request(app)
+        .get("/api/v1/question-bank")
+        .query({ examSession: "ALL", subject: "BENGALI" })
+        .set("Authorization", `Bearer ${authToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.total).toBeGreaterThanOrEqual(1);
+    });
+
+    it("sets totalQuestions to 0 for unheld future sessions like 50th BCS (regression test)", async () => {
+      const res = await request(app)
+        .get("/api/v1/question-bank/sessions")
+        .set("Authorization", `Bearer ${authToken}`);
+
+      expect(res.status).toBe(200);
+      const s50 = res.body.data.find((s: any) => s.sessionName === "50th BCS Preli");
+      expect(s50).toBeDefined();
+      expect(s50.totalQuestions).toBe(0);
+    });
   });
 });

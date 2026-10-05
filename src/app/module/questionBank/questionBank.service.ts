@@ -47,7 +47,7 @@ const listSessions = async (): Promise<IBcsSessionSummaryDto[]> => {
     const durationMinutes = isShort ? 60 : 120;
     const totalMarks = isShort ? 100.0 : 200.0;
 
-    let count = defaultCount;
+    let count = 0;
     for (const [key, value] of dbCounts.entries()) {
       const match = key.match(/\b(\d+)(?:st|nd|rd|th)?\b/i);
       if (match && parseInt(match[1], 10) === edition) {
@@ -106,27 +106,24 @@ const listSessions = async (): Promise<IBcsSessionSummaryDto[]> => {
 const listQuestions = async (
   query: IQuestionBankQuery
 ): Promise<IQuestionBankPageResponse> => {
-  let examSession = query.examSession?.trim();
+  const rawSession = query.examSession?.trim();
+  const isAllOrEmpty = !rawSession || rawSession.toUpperCase() === "ALL";
 
-  if (!examSession) {
-    const sessions = await listSessions();
-    if (sessions.length > 0) {
-      examSession = sessions[0].sessionName;
-    }
-  }
+  let resolvedExamSession: string | undefined = undefined;
 
-  let resolvedExamSession = examSession;
-  if (examSession && examSession.toUpperCase() !== "ALL") {
+  if (!isAllOrEmpty && rawSession) {
     const exactCount = await prisma.question.count({
       where: {
         type: QuestionType.BANK,
         isDeleted: false,
-        examSession,
+        examSession: rawSession,
       },
     });
 
-    if (exactCount === 0) {
-      const match = examSession.match(/\b(\d+)(?:st|nd|rd|th)?\b/i);
+    if (exactCount > 0) {
+      resolvedExamSession = rawSession;
+    } else {
+      const match = rawSession.match(/\b(\d+)(?:st|nd|rd|th)?\b/i);
       if (match) {
         const editionNum = match[1];
         const candidate = await prisma.question.findFirst({
@@ -138,14 +135,18 @@ const listQuestions = async (
               { examSession: { contains: `${editionNum}st`, mode: "insensitive" } },
               { examSession: { contains: `${editionNum}nd`, mode: "insensitive" } },
               { examSession: { contains: `${editionNum}rd`, mode: "insensitive" } },
-              { examSession: { contains: examSession, mode: "insensitive" } },
+              { examSession: { contains: rawSession, mode: "insensitive" } },
             ],
           },
           select: { examSession: true },
         });
         if (candidate?.examSession) {
           resolvedExamSession = candidate.examSession;
+        } else {
+          resolvedExamSession = rawSession;
         }
+      } else {
+        resolvedExamSession = rawSession;
       }
     }
   }
