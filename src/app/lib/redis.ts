@@ -64,6 +64,15 @@ export class RedisService {
         try {
           this.client = createClient({
             url: redisUrl,
+            socket: {
+              connectTimeout: 2000,
+              reconnectStrategy: (retries) => {
+                if (retries > 2) {
+                  return new Error("Max Redis connection attempts reached");
+                }
+                return Math.min(retries * 50, 200);
+              },
+            },
           });
 
           this.client.on("error", (err) => {
@@ -116,9 +125,13 @@ export class RedisService {
   }
 
   public async disconnect(): Promise<void> {
-    if (this.client && this.isConnected) {
+    if (this.client) {
       try {
-        await this.client.quit();
+        if (this.isConnected) {
+          await this.client.quit();
+        } else {
+          await this.client.disconnect();
+        }
       } catch {
         // ignore
       }
