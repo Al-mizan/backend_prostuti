@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx --watch src/server.ts",
-    "build": "tsup",
+    "postinstall": "prisma generate",
+    "build": "prisma generate && tsup",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
