@@ -1,7 +1,8 @@
 import { Difficulty, Option, Subject } from "../../../generated/prisma/enums";
 
 export interface IStartExamPayload {
-  examSession: string;
+  examSession?: string;
+  modelTestId?: string;
   questionCount?: number;
   durationMinutes?: number;
 }
@@ -33,8 +34,10 @@ export interface IExamSessionDto {
   examSession: string;
   totalQuestions: number;
   durationMinutes: number;
+  remainingSeconds?: number;
   questions: IExamQuestionDto[];
   startedAt: string;
+  modelTestId?: string | null;
 }
 
 export interface IExamQuestionResultDto {

@@ -1,9 +1,10 @@
 import httpStatus from "http-status";
-import { QuestionType, SessionType } from "../../../generated/prisma/enums";
+import { QuestionType, SessionType, Subject } from "../../../generated/prisma/enums";
 import AppError from "../../errorHelpers/AppError";
 import { prisma } from "../../lib/prisma";
 import {
   BCS_NEGATIVE_MARKING_PENALTY,
+  BCS_SYLLABUS_DISTRIBUTION,
   DEFAULT_EXAM_DURATION_MINUTES,
   DEFAULT_EXAM_QUESTION_COUNT,
   LEADERBOARD_LIMIT,
@@ -24,10 +25,253 @@ const startSession = async (
   userId: string,
   payload: IStartExamPayload
 ): Promise<IExamSessionDto> => {
+  const now = new Date();
+
+  // 1. Model Test attempt tracking and resume engine
+  if (payload.modelTestId) {
+    if (!UUID_REGEX.test(payload.modelTestId)) {
+      throw new AppError(httpStatus.NOT_FOUND, "Model test not found");
+    }
+
+    const modelTest = await prisma.modelTest.findUnique({
+      where: { id: payload.modelTestId },
+    });
+
+    if (!modelTest) {
+      throw new AppError(httpStatus.NOT_FOUND, "Model test not found");
+    }
+
+    const existingAttempt = await prisma.examAttempt.findFirst({
+      where: {
+        userId,
+        modelTestId: modelTest.id,
+      },
+      orderBy: {
+        startedAt: "desc",
+      },
+      include: {
+        examAttemptQuestions: {
+          include: {
+            question: true,
+          },
+          orderBy: {
+            orderIndex: "asc",
+          },
+        },
+      },
+    });
+
+    if (existingAttempt) {
+      if (existingAttempt.finishedAt !== null) {
+        // If modelTest is LIVE (now <= endTime), candidate already participated
+        if (now <= modelTest.endTime) {
+          throw new AppError(
+            httpStatus.CONFLICT,
+            "আপনি ইতিমধ্যে এই লাইভ মডেল টেস্টটিতে অংশগ্রহণ করেছেন"
+          );
+        }
+        // If EXPIRED (now > endTime), allow new practice attempt (proceeds to create new attempt below)
+      } else {
+        // Active in-progress attempt (finishedAt === null)
+        const elapsedSeconds = Math.floor(
+          (now.getTime() - existingAttempt.startedAt.getTime()) / 1000
+        );
+        const totalDurationSeconds = modelTest.durationMinutes * 60;
+
+        if (elapsedSeconds < totalDurationSeconds) {
+          // RESUME ATTEMPT: Return existing session with questions from exam_attempt_questions, and adjusted remaining duration
+          const remainingSeconds = totalDurationSeconds - elapsedSeconds;
+          const adjustedDurationMinutes = Math.max(
+            1,
+            Math.ceil(remainingSeconds / 60)
+          );
+
+          return {
+            id: existingAttempt.id,
+            examSession: existingAttempt.examSession,
+            totalQuestions: existingAttempt.examAttemptQuestions.length,
+            durationMinutes: adjustedDurationMinutes,
+            remainingSeconds,
+            modelTestId: existingAttempt.modelTestId,
+            questions: existingAttempt.examAttemptQuestions.map((aq) => ({
+              id: aq.question.id,
+              subject: aq.question.subject,
+              questionText: aq.question.questionText,
+              optionA: aq.question.optionA,
+              optionB: aq.question.optionB,
+              optionC: aq.question.optionC,
+              optionD: aq.question.optionD,
+              topic: aq.question.topic,
+              difficulty: aq.question.difficulty,
+            })),
+            startedAt: existingAttempt.startedAt.toISOString(),
+          };
+        } else {
+          // Expired time window: auto-close and throw CONFLICT
+          const answers = await prisma.answer.findMany({
+            where: {
+              sessionId: existingAttempt.id,
+              sessionType: SessionType.EXAM,
+            },
+          });
+
+          let finalScore = 0;
+          if (answers.length > 0) {
+            const correct = answers.filter((a) => a.isCorrect).length;
+            const incorrect = answers.length - correct;
+            const net = Math.max(
+              0,
+              correct - incorrect * BCS_NEGATIVE_MARKING_PENALTY
+            );
+            finalScore = Math.round(net);
+          }
+
+          await prisma.examAttempt.update({
+            where: { id: existingAttempt.id },
+            data: {
+              finishedAt: now,
+              timeTakenSeconds: totalDurationSeconds,
+              score: finalScore,
+            },
+          });
+
+          throw new AppError(
+            httpStatus.CONFLICT,
+            "পরীক্ষার নির্ধারিত সময় শেষ হয়েছে"
+          );
+        }
+      }
+    }
+
+    // Create new ExamAttempt with modelTestId and questions matching BCS syllabus
+    const targetQuestionCount =
+      payload.questionCount ?? modelTest.totalQuestions;
+    const durationMinutes =
+      payload.durationMinutes ?? modelTest.durationMinutes;
+
+    let candidateQuestions: any[] = [];
+    const selectedIds = new Set<string>();
+
+    for (const [subjectKey, requiredCount] of Object.entries(
+      BCS_SYLLABUS_DISTRIBUTION
+    )) {
+      const subject = subjectKey as Subject;
+      const questionsForSubject = await prisma.question.findMany({
+        where: {
+          type: QuestionType.BANK,
+          isDeleted: false,
+          subject,
+        },
+      });
+
+      const shuffledSubj = [...questionsForSubject].sort(
+        () => Math.random() - 0.5
+      );
+      const picked = shuffledSubj.slice(0, requiredCount);
+      for (const q of picked) {
+        candidateQuestions.push(q);
+        selectedIds.add(q.id);
+      }
+    }
+
+    // If total picked is less than target, top up from remaining bank questions
+    if (candidateQuestions.length < targetQuestionCount) {
+      const remainingNeeded = targetQuestionCount - candidateQuestions.length;
+      const extraQuestions = await prisma.question.findMany({
+        where: {
+          type: QuestionType.BANK,
+          isDeleted: false,
+          id: { notIn: Array.from(selectedIds) },
+        },
+        take: remainingNeeded,
+      });
+      for (const eq of extraQuestions) {
+        candidateQuestions.push(eq);
+        selectedIds.add(eq.id);
+      }
+    }
+
+    // Fallback if syllabus queries yielded nothing
+    if (candidateQuestions.length === 0) {
+      candidateQuestions = await prisma.question.findMany({
+        where: {
+          type: QuestionType.BANK,
+          isDeleted: false,
+        },
+        take: targetQuestionCount,
+      });
+    }
+
+    if (candidateQuestions.length === 0) {
+      throw new AppError(
+        httpStatus.NOT_FOUND,
+        `No questions found for model test: ${modelTest.title}`
+      );
+    }
+
+    const shuffledFinal = [...candidateQuestions].sort(
+      () => Math.random() - 0.5
+    );
+    const selectedQuestions = shuffledFinal.slice(
+      0,
+      Math.min(targetQuestionCount, shuffledFinal.length)
+    );
+
+    const session = await prisma.$transaction(async (tx) => {
+      const newAttempt = await tx.examAttempt.create({
+        data: {
+          userId,
+          modelTestId: modelTest.id,
+          examSession: modelTest.examSession,
+          startedAt: now,
+        },
+      });
+
+      await tx.examAttemptQuestion.createMany({
+        data: selectedQuestions.map((q, index) => ({
+          attemptId: newAttempt.id,
+          questionId: q.id,
+          orderIndex: index,
+        })),
+      });
+
+      return newAttempt;
+    });
+
+    return {
+      id: session.id,
+      examSession: session.examSession,
+      totalQuestions: selectedQuestions.length,
+      durationMinutes,
+      remainingSeconds: durationMinutes * 60,
+      modelTestId: modelTest.id,
+      questions: selectedQuestions.map((q) => ({
+        id: q.id,
+        subject: q.subject,
+        questionText: q.questionText,
+        optionA: q.optionA,
+        optionB: q.optionB,
+        optionC: q.optionC,
+        optionD: q.optionD,
+        topic: q.topic,
+        difficulty: q.difficulty,
+      })),
+      startedAt: now.toISOString(),
+    };
+  }
+
+  // 2. Standard exam session by examSession name
   const count = payload.questionCount ?? DEFAULT_EXAM_QUESTION_COUNT;
   const durationMinutes =
     payload.durationMinutes ?? DEFAULT_EXAM_DURATION_MINUTES;
-  const examSession = payload.examSession.trim();
+  const examSession = (payload.examSession ?? "").trim();
+
+  if (!examSession) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Either examSession or modelTestId must be provided"
+    );
+  }
 
   let candidateQuestions: any[] = [];
   let resolvedExamSession = examSession;
@@ -114,8 +358,6 @@ const startSession = async (
   const shuffled = [...candidateQuestions].sort(() => Math.random() - 0.5);
   const selectedQuestions = shuffled.slice(0, Math.min(count, shuffled.length));
 
-  const now = new Date();
-
   const session = await prisma.$transaction(async (tx) => {
     const newAttempt = await tx.examAttempt.create({
       data: {
@@ -141,6 +383,8 @@ const startSession = async (
     examSession: session.examSession,
     totalQuestions: selectedQuestions.length,
     durationMinutes,
+    remainingSeconds: durationMinutes * 60,
+    modelTestId: null,
     questions: selectedQuestions.map((q) => ({
       id: q.id,
       subject: q.subject,

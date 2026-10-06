@@ -19,6 +19,7 @@ describe("Exam Module Integration Tests", () => {
   let userId = "";
   let otherUserId = "";
   const createdQuestionIds: string[] = [];
+  const createdModelTestIds: string[] = [];
 
   beforeAll(async () => {
     // 1. Create primary student
@@ -104,6 +105,12 @@ describe("Exam Module Integration Tests", () => {
     if (userIds.length > 0) {
       await prisma.user.deleteMany({
         where: { id: { in: userIds } },
+      });
+    }
+
+    if (createdModelTestIds.length > 0) {
+      await prisma.modelTest.deleteMany({
+        where: { id: { in: createdModelTestIds } },
       });
     }
   });
@@ -360,6 +367,138 @@ describe("Exam Module Integration Tests", () => {
 
       expect(aliasRes.status).toBe(200);
       expect(aliasRes.body.data).toEqual(res.body.data);
+    });
+  });
+
+  describe("Live Model Test Attempt Tracking & Session Resume Engine (TICKET-FUNC-008)", () => {
+    let liveModelTestId = "";
+
+    beforeAll(async () => {
+      const now = new Date();
+      const fifteenDaysLater = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000);
+
+      const liveTest = await prisma.modelTest.create({
+        data: {
+          title: `Integration Test 15-Day Live Model Test ${Date.now()}`,
+          examSession: "47th BCS Preliminary",
+          durationMinutes: 120,
+          totalMarks: 200.0,
+          totalQuestions: 200,
+          startTime: now,
+          endTime: fifteenDaysLater,
+          isPublished: true,
+        },
+      });
+
+      liveModelTestId = liveTest.id;
+      createdModelTestIds.push(liveModelTestId);
+    });
+
+    it("rejects starting a session for non-existent modelTestId with 404 Not Found", async () => {
+      const nonExistentUuid = "00000000-0000-0000-0000-000000000000";
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ modelTestId: nonExistentUuid });
+
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+      expect(res.body.message).toContain("Model test not found");
+    });
+
+    let activeSessionId = "";
+    let firstQuestionsCount = 0;
+
+    it("starts a new live model test session with 120min duration and questions matching syllabus", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ modelTestId: liveModelTestId });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty("id");
+      expect(res.body.data.modelTestId).toBe(liveModelTestId);
+      expect(res.body.data.durationMinutes).toBe(120);
+      expect(res.body.data.remainingSeconds).toBeGreaterThan(0);
+      expect(res.body.data.questions.length).toBeGreaterThan(0);
+
+      activeSessionId = res.body.data.id;
+      firstQuestionsCount = res.body.data.questions.length;
+    });
+
+    it("resumes an existing active attempt with remaining time and existing questions", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ modelTestId: liveModelTestId });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      // Must be the exact same attempt session
+      expect(res.body.data.id).toBe(activeSessionId);
+      expect(res.body.data.modelTestId).toBe(liveModelTestId);
+      expect(res.body.data.totalQuestions).toBe(firstQuestionsCount);
+      expect(res.body.data.remainingSeconds).toBeLessThanOrEqual(120 * 60);
+      expect(res.body.data.remainingSeconds).toBeGreaterThan(0);
+    });
+
+    it("auto-closes attempt and throws 409 Conflict if duration window has elapsed", async () => {
+      // Simulate expired 120-minute timer by backdating startedAt to 130 minutes ago
+      await prisma.examAttempt.update({
+        where: { id: activeSessionId },
+        data: {
+          startedAt: new Date(Date.now() - 130 * 60 * 1000),
+        },
+      });
+
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ modelTestId: liveModelTestId });
+
+      expect(res.status).toBe(409);
+      expect(res.body.success).toBe(false);
+      expect(res.body.message).toContain("পরীক্ষার নির্ধারিত সময় শেষ হয়েছে");
+
+      // Verify attempt is finalized in DB
+      const dbAttempt = await prisma.examAttempt.findUnique({
+        where: { id: activeSessionId },
+      });
+      expect(dbAttempt?.finishedAt).not.toBeNull();
+      expect(dbAttempt?.timeTakenSeconds).toBe(120 * 60);
+    });
+
+    it("blocks a completed candidate from retaking during the 15-day live window with 409 Conflict", async () => {
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ modelTestId: liveModelTestId });
+
+      expect(res.status).toBe(409);
+      expect(res.body.success).toBe(false);
+      expect(res.body.message).toContain("আপনি ইতিমধ্যে এই লাইভ মডেল টেস্টটিতে অংশগ্রহণ করেছেন");
+    });
+
+    it("allows practice retake when model test window has EXPIRED (now > endTime)", async () => {
+      // Mark model test as EXPIRED by moving endTime into past
+      await prisma.modelTest.update({
+        where: { id: liveModelTestId },
+        data: {
+          startTime: new Date(Date.now() - 16 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() - 1000),
+        },
+      });
+
+      const res = await request(app)
+        .post("/api/v1/exam/sessions")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ modelTestId: liveModelTestId });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.id).not.toBe(activeSessionId);
+      expect(res.body.data.modelTestId).toBe(liveModelTestId);
     });
   });
 });

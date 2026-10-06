@@ -103,6 +103,10 @@ async function main() {
     _count: { id: true },
   });
   console.log(`Total sessions covered: ${sessionSummary.length}`);
+
+  // Seed 15-day active Live Model Test
+  const { seedLiveModelTest } = await import("./seedLiveModelTest");
+  await seedLiveModelTest();
 }
 
 main()

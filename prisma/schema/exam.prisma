@@ -1,6 +1,7 @@
 model ExamAttempt {
   id               String    @id @default(uuid()) @db.Uuid
   userId           String    @map("user_id") @db.Uuid
+  modelTestId      String?   @map("model_test_id") @db.Uuid
   examSession      String    @map("exam_session")
   startedAt        DateTime  @map("started_at")
   finishedAt       DateTime? @map("finished_at")
@@ -8,6 +9,7 @@ model ExamAttempt {
   score            Int?
 
   user                 User                  @relation(fields: [userId], references: [id])
+  modelTest            ModelTest?            @relation(fields: [modelTestId], references: [id])
   examAttemptQuestions ExamAttemptQuestion[]
 
   @@map("exam_attempts")
@@ -26,18 +28,19 @@ model ExamAttemptQuestion {
 }
 
 model ModelTest {
-  id              String    @id @default(uuid()) @db.Uuid
+  id              String        @id @default(uuid()) @db.Uuid
   title           String
   description     String?
-  examSession     String    @map("exam_session")
-  durationMinutes Int       @default(120) @map("duration_minutes")
-  totalMarks      Float     @default(200.0) @map("total_marks")
-  totalQuestions  Int       @default(200) @map("total_questions")
-  startTime       DateTime  @map("start_time")
-  endTime         DateTime  @map("end_time")
-  isPublished     Boolean   @default(true) @map("is_published")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  examSession     String        @map("exam_session")
+  durationMinutes Int           @default(120) @map("duration_minutes")
+  totalMarks      Float         @default(200.0) @map("total_marks")
+  totalQuestions  Int           @default(200) @map("total_questions")
+  startTime       DateTime      @map("start_time")
+  endTime         DateTime      @map("end_time")
+  isPublished     Boolean       @default(true) @map("is_published")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  examAttempts    ExamAttempt[]
 
   @@map("model_tests")
 }
