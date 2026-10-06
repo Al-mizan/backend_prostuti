@@ -254,7 +254,7 @@ export function cleanMathAndICTText(text: string): string {
   s = s.replace(/\(2FA\)16[^\(]*\(2FA\)16/g, "$(2FA)_{16}$");
   // Octal:
   s = s.replace(/\(([০-৯\d]+)\)৮/g, (_, o1) => `$(${o1})_8$`);
-  s = s.replace(/\(([০-৯\d]+)\)8\s*\1_8\s*\18/g, (_, o1) => `$(${o1})_8$`);
+  s = s.replace(/\(([০-৯\d]+)\)8\s*\*\1_8\s*\1/g,(_, o1) => `$(${o1})_8$`);
 
   // 4. Algorithm O notation:
   s = s.replace(/O\(n2\)\s*O\(n\^2\)\s*O\(n2\)/g, "$O(n^2)$");
